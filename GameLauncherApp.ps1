@@ -26,8 +26,23 @@ function Write-AppLog([string]$Level, [string]$Message) {
     } catch {}
 }
 
+$script:EpicDirMap = @{}
+$script:SteamLaunchMap = @{}
+$script:SteamDirMap = @{}
+$script:SteamExePath = ""
+
+$script:EpicDirMap = @{}
+$script:SteamLaunchMap = @{}
+$script:SteamDirMap = @{}
+$script:SteamExePath = ""
+
 function Initialize-EpicLaunchCache {
     $script:EpicLaunchMap.Clear()
+    $script:EpicDirMap.Clear()
+    $script:SteamLaunchMap.Clear()
+    $script:SteamDirMap.Clear()
+
+    # 1. Mapear todos los juegos de Epic Games por Titulo y por Carpeta de instalacion
     $epicDir = Join-Path $env:ProgramData "Epic\EpicGamesLauncher\Data\Manifests"
     if (Test-Path $epicDir) {
         $items = Get-ChildItem -Path $epicDir -Filter "*.item" -File -ErrorAction SilentlyContinue
@@ -36,12 +51,80 @@ function Initialize-EpicLaunchCache {
                 $j = Get-Content -Path $it.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
                 $dName = [string]$j.DisplayName
                 $aName = [string]$j.AppName
-                if (-not [string]::IsNullOrWhiteSpace($dName) -and -not [string]::IsNullOrWhiteSpace($aName)) {
-                    $script:EpicLaunchMap[$dName.Trim().ToLowerInvariant()] = $aName.Trim()
+                $iLoc  = [string]$j.InstallLocation
+                if (-not [string]::IsNullOrWhiteSpace($aName)) {
+                    if (-not [string]::IsNullOrWhiteSpace($dName)) {
+                        $script:EpicLaunchMap[$dName.Trim().ToLowerInvariant()] = $aName.Trim()
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($iLoc)) {
+                        $cleanLoc = ($iLoc -replace "/", "\").TrimEnd('\').ToLowerInvariant()
+                        $script:EpicDirMap[$cleanLoc] = $aName.Trim()
+                    }
                 }
             } catch {}
         }
     }
+
+    # 2. Mapear todos los juegos de Steam por Titulo y por Carpeta de instalacion (AppId)
+    try {
+        $steamRoot = $null
+        if (Test-Path "HKCU:\Software\Valve\Steam") {
+            $sp = (Get-ItemProperty -Path "HKCU:\Software\Valve\Steam" -Name "SteamPath" -ErrorAction SilentlyContinue).SteamPath
+            if ($sp) { $steamRoot = $sp -replace "/", "\" }
+        }
+        if ([string]::IsNullOrWhiteSpace($steamRoot) -or -not (Test-Path $steamRoot)) {
+            $defSteam = Join-Path ${env:ProgramFiles(x86)} "Steam"
+            if (Test-Path $defSteam) { $steamRoot = $defSteam }
+        }
+
+        $steamLibs = @{}
+        if (-not [string]::IsNullOrWhiteSpace($steamRoot) -and (Test-Path $steamRoot)) {
+            $script:SteamExePath = Join-Path $steamRoot "steam.exe"
+            $steamLibs[$steamRoot] = $true
+            $vdf = Join-Path $steamRoot "steamapps\libraryfolders.vdf"
+            if (Test-Path $vdf) {
+                $vdfText = Get-Content -Path $vdf -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                $matches = [regex]::Matches($vdfText, '"path"\s+"([^"]+)"')
+                foreach ($m in $matches) {
+                    $lp = $m.Groups[1].Value -replace "\\\\", "\"
+                    if (Test-Path $lp) { $steamLibs[$lp] = $true }
+                }
+            }
+        }
+
+        $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -gt 0 }
+        foreach ($d in $drives) {
+            $sl1 = Join-Path $d.Root "SteamLibrary"
+            if (Test-Path $sl1) { $steamLibs[$sl1] = $true }
+            $sl2 = Join-Path $d.Root "Program Files (x86)\Steam"
+            if (Test-Path $sl2) { $steamLibs[$sl2] = $true }
+        }
+
+        foreach ($lib in $steamLibs.Keys) {
+            $appsDir = Join-Path $lib "steamapps"
+            if (-not (Test-Path $appsDir)) { continue }
+            $acfs = Get-ChildItem -Path $appsDir -Filter "appmanifest_*.acf" -File -ErrorAction SilentlyContinue
+            foreach ($acf in $acfs) {
+                $txt = Get-Content -Path $acf.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                $appId = ""
+                if ($txt -match '"appid"\s+"([^"]+)"') { $appId = $Matches[1].Trim() }
+                $name = ""
+                if ($txt -match '"name"\s+"([^"]+)"') { $name = $Matches[1].Trim() }
+                $instDir = ""
+                if ($txt -match '"installdir"\s+"([^"]+)"') { $instDir = $Matches[1].Trim() }
+
+                if (-not [string]::IsNullOrWhiteSpace($appId)) {
+                    if (-not [string]::IsNullOrWhiteSpace($name)) {
+                        $script:SteamLaunchMap[$name.ToLowerInvariant()] = $appId
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($instDir)) {
+                        $fullGameDir = (Join-Path $appsDir "common\$instDir").TrimEnd('\').ToLowerInvariant()
+                        $script:SteamDirMap[$fullGameDir] = $appId
+                    }
+                }
+            }
+        }
+    } catch {}
 }
 
 function Get-GameIconOrCover([string]$ExePath, [string]$CoverPath) {
@@ -1512,27 +1595,87 @@ function Invoke-PlayGame($Game) {
         return
     }
     try {
-        $workDir = [System.IO.Path]::GetDirectoryName($Game.ExecutablePath)
+        if ($script:EpicLaunchMap.Count -eq 0 -and $script:SteamLaunchMap.Count -eq 0) {
+            Initialize-EpicLaunchCache
+        }
+
+        $exeFull = $Game.ExecutablePath.Trim().Replace("/", "\")
+        $exeLower = $exeFull.ToLowerInvariant()
+        $titleKey = $Game.Title.Trim().ToLowerInvariant()
+        $workDir = [System.IO.Path]::GetDirectoryName($exeFull)
         if ([string]::IsNullOrWhiteSpace($workDir)) { $workDir = $PSScriptRoot }
 
-        $launchedViaEpic = $false
-        if ($Game.PlatformSource -eq "Epic Games" -and [string]::IsNullOrWhiteSpace($Game.Arguments)) {
-            $titleKey = $Game.Title.Trim().ToLowerInvariant()
-            if (-not $script:EpicLaunchMap.ContainsKey($titleKey)) {
-                Initialize-EpicLaunchCache
+        $launchedViaPlatform = $false
+
+        # A) COMPROBAR SI ES UN JUEGO DE EPIC GAMES (Por carpeta de instalacion o por titulo)
+        $epicAppName = ""
+        foreach ($dirKey in $script:EpicDirMap.Keys) {
+            if ($exeLower.StartsWith($dirKey + "\")) {
+                $epicAppName = $script:EpicDirMap[$dirKey]
+                break
             }
-            if ($script:EpicLaunchMap.ContainsKey($titleKey)) {
-                $appName = $script:EpicLaunchMap[$titleKey]
-                Start-Process -FilePath "com.epicgames.launcher://apps/$($appName)?action=launch&silent=true"
-                $launchedViaEpic = $true
+        }
+        if ([string]::IsNullOrWhiteSpace($epicAppName) -and $script:EpicLaunchMap.ContainsKey($titleKey)) {
+            $epicAppName = $script:EpicLaunchMap[$titleKey]
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($epicAppName) -and [string]::IsNullOrWhiteSpace($Game.Arguments)) {
+            $Game.PlatformSource = "Epic Games"
+            $epicUri = "com.epicgames.launcher://apps/$($epicAppName)?action=launch&silent=true"
+            Start-Process -FilePath "explorer.exe" -ArgumentList "`"$epicUri`""
+            $launchedViaPlatform = $true
+        }
+
+        # B) COMPROBAR SI ES UN JUEGO DE STEAM (Por carpeta steamapps\common, por titulo o por steam_appid.txt)
+        if (-not $launchedViaPlatform) {
+            $steamAppId = ""
+            foreach ($sDirKey in $script:SteamDirMap.Keys) {
+                if ($exeLower.StartsWith($sDirKey + "\")) {
+                    $steamAppId = $script:SteamDirMap[$sDirKey]
+                    break
+                }
+            }
+            if ([string]::IsNullOrWhiteSpace($steamAppId) -and $script:SteamLaunchMap.ContainsKey($titleKey)) {
+                $steamAppId = $script:SteamLaunchMap[$titleKey]
+            }
+            if ([string]::IsNullOrWhiteSpace($steamAppId)) {
+                $appIdTxt = Join-Path $workDir "steam_appid.txt"
+                if (Test-Path $appIdTxt) {
+                    $rawId = (Get-Content $appIdTxt -Raw -ErrorAction SilentlyContinue).Trim()
+                    if ($rawId -match "^\d+$") { $steamAppId = $rawId }
+                }
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($steamAppId) -and [string]::IsNullOrWhiteSpace($Game.Arguments)) {
+                $Game.PlatformSource = "Steam"
+                $steamUri = "steam://rungameid/$steamAppId"
+                Start-Process -FilePath "explorer.exe" -ArgumentList "`"$steamUri`""
+                $launchedViaPlatform = $true
+            } elseif ($exeLower.Contains("\steamapps\common\")) {
+                # Si esta en steamapps pero no tiene manifiesto, abrir Steam primero si esta cerrado
+                if (-not (Get-Process -Name "steam" -ErrorAction SilentlyContinue)) {
+                    if (-not [string]::IsNullOrWhiteSpace($script:SteamExePath) -and (Test-Path $script:SteamExePath)) {
+                        Start-Process -FilePath $script:SteamExePath
+                        Start-Sleep -Seconds 3
+                    }
+                }
             }
         }
 
-        if (-not $launchedViaEpic) {
+        # C) SI ES UN JUEGO INDEPENDIENTE / FIVEM / EMULADOR
+        if (-not $launchedViaPlatform) {
+            # Si es FiveM y Steam esta instalado pero cerrado, abrir Steam en segundo plano para autenticar
+            if ($exeLower.Contains("fivem") -and (-not (Get-Process -Name "steam" -ErrorAction SilentlyContinue))) {
+                if (-not [string]::IsNullOrWhiteSpace($script:SteamExePath) -and (Test-Path $script:SteamExePath)) {
+                    Start-Process -FilePath $script:SteamExePath -ArgumentList "-silent"
+                    Start-Sleep -Seconds 2
+                }
+            }
+
             if ([string]::IsNullOrWhiteSpace($Game.Arguments)) {
-                Start-Process -FilePath $Game.ExecutablePath -WorkingDirectory $workDir
+                Start-Process -FilePath $exeFull -WorkingDirectory $workDir
             } else {
-                Start-Process -FilePath $Game.ExecutablePath -ArgumentList $Game.Arguments -WorkingDirectory $workDir
+                Start-Process -FilePath $exeFull -ArgumentList $Game.Arguments -WorkingDirectory $workDir
             }
         }
 
@@ -1549,7 +1692,7 @@ function Invoke-PlayGame($Game) {
         })
         Save-LibraryData
         Update-GamesView
-        $FooterStatusText.Text = "En ejecucion: $($Game.Title)"
+        $FooterStatusText.Text = "Iniciando a traves de $($Game.PlatformSource): $($Game.Title)"
         if ($script:AppData.MinimizeOnLaunch) {
             $Window.WindowState = [System.Windows.WindowState]::Minimized
         }
