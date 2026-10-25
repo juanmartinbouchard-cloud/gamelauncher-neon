@@ -1,0 +1,41 @@
+========================================================================
+                 GAMELAUNCHER NEON - GUÍA RÁPIDA DE USO
+========================================================================
+
+¡Hola! No necesitas instalar nada ni tocar código para usar la aplicación.
+
+PASO 1: DESCOMPRIMIR EL ARCHIVO ZIP
+-----------------------------------
+Asegúrate de haber extraído (descomprimido) este archivo ZIP en una carpeta
+normal de tu ordenador (por ejemplo, en el Escritorio o en Documentos).
+No abras la aplicación desde dentro del ZIP sin descomprimirlo primero.
+
+PASO 2: ABRIR LA APLICACIÓN
+---------------------------
+Haz doble clic en el archivo:
+   👉 ABRIR_GAMELAUNCHER.bat
+
+• La primera vez que lo abras, creará automáticamente en 1 segundo el
+  archivo ejecutable "GameLauncher.exe" en esta misma carpeta usando el
+  motor oficial que ya viene integrado dentro de Windows 10 y Windows 11.
+• Al crearse directamente en tu ordenador, Windows reconoce que el archivo
+  es local y evita los bloqueos habituales de descarga de Internet.
+• A partir de ese momento, verás aparecer "GameLauncher.exe" con su icono
+  neón en esta misma carpeta y podrás abrirlo directamente siempre que quieras.
+
+PASO 3 (OPCIONAL): PONER EL ICONO EN TU ESCRITORIO
+--------------------------------------------------
+Si quieres tener el acceso directo con su icono neón en tu Escritorio de
+Windows, haz doble clic en:
+   👉 CREAR_ACCESO_DIRECTO_ESCRITORIO.bat
+
+========================================================================
+¿QUÉ CONTIENEN LAS DEMÁS CARPETAS?
+========================================================================
+• Assets/     -> Logotipo en alta resolución, icono oficial (.ico) y manifiesto.
+• src/        -> Código fuente completo en C# y proyecto modular .NET 8 WPF.
+• scripts/    -> Scripts de compilación, publicación, firma digital (SignTool)
+                 y diagnóstico de Smart App Control.
+• installer/  -> Script para crear un instalador de Windows con Inno Setup.
+• docs/       -> Documentación completa en español, guía de firma digital y
+                 solución de errores habituales.
